@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: ideas-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ALLOWED_USER_ID
+        sync: false
+      - key: NOTION_TOKEN
+        sync: false
+      - key: NOTION_DATABASE_ID
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false

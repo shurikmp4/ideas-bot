@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -36,9 +38,12 @@ NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 NOTION_DB_ID = os.environ["NOTION_DATABASE_ID"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-120b")
-WEBAPP_URL = os.environ.get("WEBAPP_URL")  # публичный https-адрес сервера (Railway)
+WEBAPP_URL = os.environ.get("WEBAPP_URL") or os.environ.get("RENDER_EXTERNAL_URL")  # публичный https-адрес сервера
 PORT = int(os.environ.get("PORT", "8080"))
 DEV_NO_AUTH = os.environ.get("DEV_NO_AUTH") == "1"  # только для локальной проверки
+# на сервере принимаем сообщения по вебхуку (сервер может спать), локально опрашиваем Telegram
+USE_WEBHOOK = bool(WEBAPP_URL) and not DEV_NO_AUTH
+WEBHOOK_SECRET = hashlib.sha256(TELEGRAM_TOKEN.encode()).hexdigest()[:32]
 
 FALLBACK_FOLDER = "Разное"
 
@@ -159,31 +164,6 @@ async def ensure_schema() -> None:
             r.raise_for_status()
 
 
-async def post_init(app: Application) -> None:
-    await ensure_schema()
-    site = web.make_app(
-        owner_id=OWNER_ID,
-        bot_token=TELEGRAM_TOKEN,
-        notion_headers=NOTION_HEADERS,
-        db_id=NOTION_DB_ID,
-        dev=DEV_NO_AUTH,
-    )
-    runner = aioweb.AppRunner(site)
-    await runner.setup()
-    await aioweb.TCPSite(runner, "0.0.0.0", PORT).start()
-    app.bot_data["web_runner"] = runner
-    if WEBAPP_URL:
-        await app.bot.set_chat_menu_button(
-            menu_button=MenuButtonWebApp(text="💡 Идеи", web_app=WebAppInfo(WEBAPP_URL))
-        )
-
-
-async def post_shutdown(app: Application) -> None:
-    runner = app.bot_data.get("web_runner")
-    if runner:
-        await runner.cleanup()
-
-
 def owner_only(handler):
     async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if update.effective_user and update.effective_user.id == OWNER_ID:
@@ -285,14 +265,11 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-def main() -> None:
-    app = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+async def run() -> None:
+    builder = Application.builder().token(TELEGRAM_TOKEN)
+    if USE_WEBHOOK:
+        builder = builder.updater(None)  # обновления приходят через наш веб-сервер
+    app = builder.build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("app", cmd_app))
     app.add_handler(CommandHandler("folders", cmd_folders))
@@ -300,7 +277,59 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.VOICE, on_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    app.run_polling()
+
+    async def telegram_webhook(request: aioweb.Request) -> aioweb.Response:
+        if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+            return aioweb.Response(status=403)
+        await app.update_queue.put(Update.de_json(await request.json(), app.bot))
+        return aioweb.Response(text="ok")
+
+    async def health(request: aioweb.Request) -> aioweb.Response:
+        return aioweb.Response(text="ok")
+
+    await ensure_schema()
+    site = web.make_app(
+        owner_id=OWNER_ID,
+        bot_token=TELEGRAM_TOKEN,
+        notion_headers=NOTION_HEADERS,
+        db_id=NOTION_DB_ID,
+        dev=DEV_NO_AUTH,
+    )
+    site.add_routes([aioweb.post("/telegram-webhook", telegram_webhook), aioweb.get("/health", health)])
+    runner = aioweb.AppRunner(site)
+    await runner.setup()
+    await aioweb.TCPSite(runner, "0.0.0.0", PORT).start()
+
+    async with app:
+        await app.start()
+        if USE_WEBHOOK:
+            await app.bot.set_webhook(
+                url=f"{WEBAPP_URL.rstrip('/')}/telegram-webhook",
+                secret_token=WEBHOOK_SECRET,
+                allowed_updates=Update.ALL_TYPES,
+            )
+        else:
+            await app.bot.delete_webhook()
+            await app.updater.start_polling()
+        if WEBAPP_URL:
+            await app.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="💡 Идеи", web_app=WebAppInfo(WEBAPP_URL))
+            )
+        log.info("Bot started (%s)", "webhook" if USE_WEBHOOK else "polling")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            if not USE_WEBHOOK:
+                await app.updater.stop()
+            await app.stop()
+            await runner.cleanup()
+
+
+def main() -> None:
+    try:
+        asyncio.run(run())
+    except (KeyboardInterrupt, SystemExit):
+        pass
 
 
 if __name__ == "__main__":
