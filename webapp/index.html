@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Идеи</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --surface: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    --text: var(--tg-theme-text-color, #111111);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --danger: #e5484d;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not(.tg) { --bg: #17171a; --surface: #232327; --text: #f2f2f4; --hint: #8e8e96; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", Roboto, sans-serif; }
+  body { padding: 0 16px calc(24px + env(safe-area-inset-bottom)); max-width: 640px; margin: 0 auto; }
+
+  header { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 14px 0 10px; }
+  .top { display: flex; align-items: baseline; justify-content: space-between; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: -.02em; }
+  .count { color: var(--hint); font-size: 14px; }
+
+  .tabs { display: flex; gap: 4px; background: var(--surface); padding: 3px; border-radius: 10px; margin: 12px 0 10px; }
+  .tabs button { flex: 1; border: 0; background: none; color: var(--hint); font: inherit; font-size: 14px;
+    font-weight: 600; padding: 7px 0; border-radius: 8px; transition: background .2s, color .2s; }
+  .tabs button.on { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip { flex: none; border: 0; background: var(--surface); color: var(--text); font: inherit; font-size: 14px;
+    padding: 6px 12px; border-radius: 999px; white-space: nowrap; transition: background .2s, color .2s; }
+  .chip span { color: var(--hint); margin-left: 4px; font-size: 12px; }
+  .chip.on { background: var(--accent); color: var(--accent-text); }
+  .chip.on span { color: inherit; opacity: .75; }
+
+  .list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+  .card { background: var(--surface); border-radius: var(--radius); padding: 13px 14px; display: flex; gap: 12px;
+    animation: in .25s ease both; }
+  @keyframes in { from { opacity: 0; transform: translateY(6px); } }
+  .check { flex: none; width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--hint); background: none;
+    padding: 0; margin-top: 1px; display: grid; place-items: center; transition: background .2s, border-color .2s, transform .15s; }
+  .check:active { transform: scale(.88); }
+  .check svg { width: 14px; height: 14px; stroke: var(--accent-text); stroke-width: 3; fill: none; opacity: 0;
+    stroke-linecap: round; stroke-linejoin: round; transition: opacity .15s; }
+  .done .check { background: var(--accent); border-color: var(--accent); }
+  .done .check svg { opacity: 1; }
+  .body { flex: 1; min-width: 0; }
+  .title { font-weight: 600; word-break: break-word; }
+  .done .title { text-decoration: line-through; color: var(--hint); }
+  .meta { margin-top: 3px; font-size: 13px; color: var(--hint); display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .text { margin-top: 8px; font-size: 15px; white-space: pre-wrap; word-break: break-word; }
+  .del { margin-top: 10px; border: 0; background: none; color: var(--danger); font: inherit; font-size: 14px; padding: 0; }
+
+  .empty { text-align: center; color: var(--hint); padding: 56px 20px; }
+  .empty b { display: block; font-size: 18px; color: var(--text); margin-bottom: 4px; }
+  .err { color: var(--danger); text-align: center; padding: 40px 16px; }
+  .skeleton { height: 64px; border-radius: var(--radius); background: var(--surface); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .5; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="top"><h1>💡 Идеи</h1><div class="count" id="count"></div></div>
+  <div class="tabs" id="tabs">
+    <button data-tab="active" class="on">Активные</button>
+    <button data-tab="done">Выполненные</button>
+  </div>
+  <div class="chips" id="chips"></div>
+</header>
+<main class="list" id="list"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></main>
+
+<script>
+const tg = window.Telegram && Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); if (tg.initData) document.documentElement.classList.add("tg"); }
+
+const state = { ideas: [], tab: "active", folder: null, open: null };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const haptic = (k) => { try { tg.HapticFeedback.impactOccurred(k); } catch (e) {} };
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", "X-Telegram-Init-Data": (tg && tg.initData) || "" },
+  });
+  if (!r.ok) throw new Error(r.status === 403 ? "Нет доступа" : "Ошибка " + r.status);
+  return r.json();
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso), now = new Date();
+  const days = Math.floor((now.setHours(0,0,0,0) - new Date(iso).setHours(0,0,0,0)) / 864e5);
+  if (days === 0) return "сегодня";
+  if (days === 1) return "вчера";
+  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+}
+
+function render() {
+  const isDone = state.tab === "done";
+  const inTab = state.ideas.filter((i) => i.done === isDone);
+
+  const folders = {};
+  inTab.forEach((i) => (folders[i.folder] = (folders[i.folder] || 0) + 1));
+  if (state.folder && !folders[state.folder]) state.folder = null;
+  $("chips").innerHTML =
+    `<button class="chip ${state.folder ? "" : "on"}" data-folder="">Все<span>${inTab.length}</span></button>` +
+    Object.entries(folders).map(([f, n]) =>
+      `<button class="chip ${state.folder === f ? "on" : ""}" data-folder="${esc(f)}">${esc(f)}<span>${n}</span></button>`).join("");
+
+  const shown = inTab.filter((i) => !state.folder || i.folder === state.folder);
+  const left = state.ideas.filter((i) => !i.done).length;
+  $("count").textContent = state.ideas.length ? `${left} осталось из ${state.ideas.length}` : "";
+
+  if (!shown.length) {
+    $("list").innerHTML = isDone
+      ? `<div class="empty"><b>Пока пусто</b>Отмеченные идеи появятся здесь</div>`
+      : `<div class="empty"><b>Все идеи выполнены</b>Или пришли боту новую</div>`;
+    return;
+  }
+  $("list").innerHTML = shown.map((i) => `
+    <div class="card ${i.done ? "done" : ""}" data-id="${i.id}">
+      <button class="check" aria-label="Выполнено"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
+      <div class="body">
+        <div class="title">${esc(i.title)}</div>
+        <div class="meta"><span>${esc(i.folder)}</span><span>${fmtDate(i.created)}</span></div>
+        ${state.open === i.id ? `<div class="text">${esc(i.text)}</div><button class="del">Удалить</button>` : ""}
+      </div>
+    </div>`).join("");
+}
+
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.tab = b.dataset.tab; state.folder = null; state.open = null;
+  document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
+  render();
+});
+$("chips").addEventListener("click", (e) => {
+  const b = e.target.closest(".chip"); if (!b) return;
+  state.folder = b.dataset.folder || null; render();
+});
+$("list").addEventListener("click", async (e) => {
+  const card = e.target.closest(".card"); if (!card) return;
+  const idea = state.ideas.find((i) => i.id === card.dataset.id);
+
+  if (e.target.closest(".check")) {
+    idea.done = !idea.done; haptic("light"); render();           // сразу показываем, потом сохраняем
+    try { await api(`/api/ideas/${idea.id}/done`, { method: "POST", body: JSON.stringify({ done: idea.done }) }); }
+    catch (err) { idea.done = !idea.done; render(); tg && tg.showAlert ? tg.showAlert(err.message) : alert(err.message); }
+  } else if (e.target.closest(".del")) {
+    const go = async () => {
+      state.ideas = state.ideas.filter((i) => i !== idea); state.open = null; render();
+      try { await api(`/api/ideas/${idea.id}`, { method: "DELETE" }); } catch (err) { load(); }
+    };
+    tg && tg.showConfirm ? tg.showConfirm("Удалить идею?", (ok) => ok && go()) : confirm("Удалить идею?") && go();
+  } else {
+    state.open = state.open === idea.id ? null : idea.id; render();
+  }
+});
+
+async function load() {
+  try { state.ideas = await api("/api/ideas"); render(); }
+  catch (err) { $("list").innerHTML = `<div class="err">${esc(err.message)}</div>`; }
+}
+load();
+</script>
+</body>
+</html>
